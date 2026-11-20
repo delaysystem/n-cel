@@ -1,0 +1,26 @@
+{
+  "name": "n-cel",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build:wasm": "if command -v cargo >/dev/null 2>&1; then cargo build --manifest-path wasm/Cargo.toml --target wasm32-unknown-unknown --release && bunx wasm-opt --enable-bulk-memory --enable-nontrapping-float-to-int -Oz wasm/target/wasm32-unknown-unknown/release/n_cel_engine.wasm -o src/cel_engine.wasm; elif [ -f src/cel_engine.wasm ]; then echo 'Using committed src/cel_engine.wasm'; else echo 'Error: cargo not found and src/cel_engine.wasm missing' && exit 1; fi",
+    "deploy": "bun run build:wasm && wrangler deploy",
+    "dev": "bun run build:wasm && wrangler dev",
+    "start": "bun run dev",
+    "test": "vitest",
+    "test:curl": "bun run scripts/test-cel-curl.ts",
+    "benchmark": "bun run scripts/benchmark.ts",
+    "cf-typegen": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.0.0",
+    "@types/node": "^26.6.3",
+    "typescript": "^5.5.2",
+    "vitest": "~4.1.0",
+    "wasm-opt": "^1.4.0",
+    "wrangler": "^4.142.0"
+  },
+  "trustedDependencies": [
+    "wasm-opt"
+  ]
+}
