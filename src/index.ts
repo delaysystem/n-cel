@@ -3,7 +3,7 @@ import celWasmModule from "./cel_engine.wasm";
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_EXPRESSION_BYTES = 4 * 1024;
 const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true });
+const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
 export type WorkerEnv = Env & {
 	API_TOKEN?: string;
@@ -92,6 +92,10 @@ export interface CelBatchEvaluationResult {
 	execution_time_us?: number;
 }
 
+// The Wrangler-generated worker types declare WebAssembly.Module as abstract,
+// so use a constructible view of it for the local (Bun/Node) code path.
+const ModuleCtor = WebAssembly.Module as unknown as new (bytes: BufferSource) => WebAssembly.Module;
+
 let compiledModule: WebAssembly.Module | null = null;
 function getWasmModule(): WebAssembly.Module {
 	if (!compiledModule) {
@@ -100,9 +104,9 @@ function getWasmModule(): WebAssembly.Module {
 		} else if (typeof celWasmModule === "string") {
 			// Running in Bun or Node where .wasm import yields a filesystem path
 			const fs = require("node:fs");
-			compiledModule = new WebAssembly.Module(fs.readFileSync(celWasmModule));
+			compiledModule = new ModuleCtor(fs.readFileSync(celWasmModule));
 		} else {
-			compiledModule = new WebAssembly.Module(celWasmModule as unknown as BufferSource);
+			compiledModule = new ModuleCtor(celWasmModule as unknown as BufferSource);
 		}
 	}
 	return compiledModule;
