@@ -126,7 +126,19 @@ export function createCelInstance(): CelExports {
 	return getOrCreateIsolateInstance();
 }
 
+const MAX_PROGRAM_SOURCE_CACHE = 2048;
 const programSourceCache = new Map<string, string>();
+const RPC_MAX_EXPRESSION_BYTES = 4096;
+const RPC_MAX_BATCH_RULES = 200;
+
+function cacheProgramSource(id: string, source: string): void {
+	if (programSourceCache.has(id)) programSourceCache.delete(id);
+	else if (programSourceCache.size >= MAX_PROGRAM_SOURCE_CACHE) {
+		const oldest = programSourceCache.keys().next().value;
+		if (oldest !== undefined) programSourceCache.delete(oldest);
+	}
+	programSourceCache.set(id, source);
+}
 
 export function evaluateCel(
 	source?: string,
@@ -134,6 +146,9 @@ export function evaluateCel(
 	programId?: string,
 ): CelEvaluationResult {
 	const start = performance.now();
+	if (source && encoder.encode(source).byteLength > RPC_MAX_EXPRESSION_BYTES) {
+		throw new Error("CEL expression exceeds maximum allowed size");
+	}
 	const wasm = getOrCreateIsolateInstance();
 	let resolvedSource = source && source.trim().length > 0 ? source : undefined;
 	if (!resolvedSource && programId) {
@@ -147,6 +162,9 @@ export function evaluateCel(
 			context,
 		}),
 	);
+	if (payloadBytes.byteLength > 65_536) {
+		throw new Error("CEL request exceeds maximum allowed size");
+	}
 	const inputPtr = wasm.cel_alloc(payloadBytes.byteLength);
 	if (!inputPtr) {
 		throw new Error("Unable to allocate CEL request memory");
@@ -170,7 +188,7 @@ export function evaluateCel(
 		const latencyUs = Math.round((performance.now() - start) * 1000);
 		parsed.execution_time_us = latencyUs;
 		if (parsed.success && parsed.program_id && resolvedSource) {
-			programSourceCache.set(parsed.program_id, resolvedSource);
+			cacheProgramSource(parsed.program_id, resolvedSource);
 		}
 		return parsed;
 	} finally {
@@ -184,8 +202,14 @@ export function evaluateCel(
 }
 
 export function precompileCel(source: string, id?: string): CelPrecompileResult {
+	if (encoder.encode(source).byteLength > RPC_MAX_EXPRESSION_BYTES) {
+		throw new Error("CEL expression exceeds maximum allowed size");
+	}
 	const wasm = getOrCreateIsolateInstance();
 	const payloadBytes = encoder.encode(JSON.stringify({ source, id }));
+	if (payloadBytes.byteLength > 65_536) {
+		throw new Error("CEL request exceeds maximum allowed size");
+	}
 	const inputPtr = wasm.cel_alloc(payloadBytes.byteLength);
 	if (!inputPtr) {
 		throw new Error("Unable to allocate CEL request memory");
@@ -207,7 +231,7 @@ export function precompileCel(source: string, id?: string): CelPrecompileResult 
 		const jsonStr = output.slice(delimiter + 1);
 		const parsed = JSON.parse(jsonStr) as CelPrecompileResult;
 		if (parsed.valid && parsed.program_id) {
-			programSourceCache.set(parsed.program_id, source);
+			cacheProgramSource(parsed.program_id, source);
 		}
 		return parsed;
 	} finally {
@@ -221,9 +245,15 @@ export function precompileCel(source: string, id?: string): CelPrecompileResult 
 }
 
 export function batchPrecompileCel(scripts: PrecompileScript[]): CelBatchPrecompileResult {
+	if (scripts.length > RPC_MAX_BATCH_RULES) {
+		throw new Error("CEL batch exceeds maximum rule count");
+	}
 	const start = performance.now();
 	const wasm = getOrCreateIsolateInstance();
 	const payloadBytes = encoder.encode(JSON.stringify({ scripts }));
+	if (payloadBytes.byteLength > 65_536) {
+		throw new Error("CEL request exceeds maximum allowed size");
+	}
 	const inputPtr = wasm.cel_alloc(payloadBytes.byteLength);
 	if (!inputPtr) {
 		throw new Error("Unable to allocate CEL request memory");
@@ -251,7 +281,7 @@ export function batchPrecompileCel(scripts: PrecompileScript[]): CelBatchPrecomp
 				const res = parsed.results[i];
 				const original = scripts[i];
 				if (res.valid && res.program_id && original) {
-					programSourceCache.set(res.program_id, original.source);
+					cacheProgramSource(res.program_id, original.source);
 				}
 			}
 		}
@@ -294,6 +324,9 @@ export function batchEvaluateCel(
 	rules: BatchRule[],
 	context: Record<string, unknown> = {},
 ): CelBatchEvaluationResult {
+	if (rules.length > RPC_MAX_BATCH_RULES) {
+		throw new Error("CEL batch exceeds maximum rule count");
+	}
 	const start = performance.now();
 	const wasm = getOrCreateIsolateInstance();
 
@@ -344,7 +377,7 @@ export function batchEvaluateCel(
 				if (res.success && res.program_id) {
 					const original = resolvedRules.find((r) => r.id === res.id);
 					if (original?.source) {
-						programSourceCache.set(res.program_id, original.source);
+						cacheProgramSource(res.program_id, original.source);
 					}
 				}
 			}
@@ -418,11 +451,11 @@ export class CelRpcService extends BaseWorkerEntrypoint {
 	}
 }
 
-const CORS_HEADERS = {
-	"access-control-allow-origin": "*",
-	"access-control-allow-methods": "POST, OPTIONS",
-	"access-control-allow-headers": "Authorization, Content-Type",
-	"access-control-max-age": "86400",
+const SECURITY_HEADERS = {
+	"strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+	"x-frame-options": "DENY",
+	"referrer-policy": "no-referrer",
+	"content-security-policy": "default-src 'none'; frame-ancestors 'none'",
 };
 
 function jsonResponse(body: unknown, status: number, extraHeaders?: HeadersInit): Response {
@@ -432,7 +465,7 @@ function jsonResponse(body: unknown, status: number, extraHeaders?: HeadersInit)
 			"content-type": "application/json; charset=utf-8",
 			"cache-control": "no-store",
 			"x-content-type-options": "nosniff",
-			...CORS_HEADERS,
+			...SECURITY_HEADERS,
 			...extraHeaders,
 		},
 	});
@@ -446,7 +479,7 @@ function unauthorizedResponse(): Response {
 			"content-type": "application/json; charset=utf-8",
 			"cache-control": "no-store",
 			"x-content-type-options": "nosniff",
-			...CORS_HEADERS,
+			...SECURITY_HEADERS,
 		},
 	});
 }
@@ -542,7 +575,7 @@ function executeWasmOp(
 					"cache-control": "no-store",
 					"x-content-type-options": "nosniff",
 					"server-timing": `cel;dur=${durationMs}`,
-					...CORS_HEADERS,
+					...SECURITY_HEADERS,
 				},
 			});
 		} catch {
@@ -561,13 +594,6 @@ function executeWasmOp(
 
 export default {
 	async fetch(request: Request, env: WorkerEnv): Promise<Response> {
-		if (request.method === "OPTIONS") {
-			return new Response(null, {
-				status: 204,
-				headers: CORS_HEADERS,
-			});
-		}
-
 		const url = new URL(request.url);
 
 		if (request.method === "GET" && url.pathname === "/health") {
@@ -576,8 +602,8 @@ export default {
 				if (wasm && wasm.memory) {
 					return jsonResponse({ status: "healthy", wasm: "ready" }, 200);
 				}
-			} catch (err) {
-				return jsonResponse({ status: "degraded", wasm: "error", error: String(err) }, 503);
+			} catch {
+				return jsonResponse({ status: "degraded", wasm: "error", error: "CEL_INIT_FAILED" }, 503);
 			}
 		}
 
@@ -589,38 +615,20 @@ export default {
 		const isPrecompile = url.pathname === "/v1/precompile";
 		const isBatchEvaluate = url.pathname === "/v1/batch-evaluate";
 		const isBatchPrecompile = url.pathname === "/v1/batch-precompile";
-		const isProgramsList = url.pathname === "/v1/programs";
 
-		if (!isEvaluate && !isPrecompile && !isBatchEvaluate && !isBatchPrecompile && !isProgramsList) {
+		if (!isEvaluate && !isPrecompile && !isBatchEvaluate && !isBatchPrecompile) {
 			return jsonResponse({ error: "Not found" }, 404);
-		}
-
-		if (isProgramsList) {
-			if (request.method !== "GET") {
-				return new Response(JSON.stringify({ error: "Method not allowed" }), {
-					status: 405,
-					headers: {
-						allow: "GET, OPTIONS",
-						"content-type": "application/json; charset=utf-8",
-						"cache-control": "no-store",
-						"x-content-type-options": "nosniff",
-						...CORS_HEADERS,
-					},
-				});
-			}
-			const result = listPrecompiledCel();
-			return jsonResponse(result, 200);
 		}
 
 		if (request.method !== "POST") {
 			return new Response(JSON.stringify({ error: "Method not allowed" }), {
 				status: 405,
 				headers: {
-					allow: "POST, OPTIONS",
+					allow: "POST",
 					"content-type": "application/json; charset=utf-8",
 					"cache-control": "no-store",
 					"x-content-type-options": "nosniff",
-					...CORS_HEADERS,
+					...SECURITY_HEADERS,
 				},
 			});
 		}

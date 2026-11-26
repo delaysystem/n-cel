@@ -104,14 +104,14 @@ describe("CEL evaluation Worker", () => {
 		expect(body).toMatchObject({ success: true, value: true, value_type: "bool" });
 	});
 
-	it("supports CORS preflight OPTIONS requests", async () => {
+	it("disables wildcard CORS preflight on server-to-server endpoints", async () => {
 		const request = new IncomingRequest("https://n-cel.test/v1/evaluate", {
 			method: "OPTIONS",
 		});
 		const response = await worker.fetch(request, testEnv, createExecutionContext());
-		expect(response.status).toBe(204);
-		expect(response.headers.get("access-control-allow-origin")).toBe("*");
-		expect(response.headers.get("access-control-allow-methods")).toContain("POST");
+		expect(response.status).toBe(401);
+		expect(response.headers.get("access-control-allow-origin")).toBeNull();
+		expect(response.headers.get("x-frame-options")).toBe("DENY");
 	});
 
 	it("requires the API bearer token", async () => {
@@ -362,7 +362,7 @@ describe("CEL evaluation Worker", () => {
 		expect(evalBatchBody.results[0].value).toBe(true);
 		expect(evalBatchBody.results[1].value).toBe(true);
 
-		// 3. Inspect program inventory via GET /v1/programs
+		// 3. GET /v1/programs is disabled to prevent cross-tenant source enumeration
 		const listReq = new IncomingRequest("https://n-cel.test/v1/programs", {
 			method: "GET",
 			headers: {
@@ -370,14 +370,6 @@ describe("CEL evaluation Worker", () => {
 			},
 		});
 		const listResp = await worker.fetch(listReq, testEnv, createExecutionContext());
-		expect(listResp.status).toBe(200);
-		const listBody = (await listResp.json()) as {
-			count: number;
-			programs: Array<{ id: string; variables: string[] }>;
-		};
-		expect(listBody.count).toBeGreaterThanOrEqual(3);
-		const progIds = listBody.programs.map((p) => p.id);
-		expect(progIds).toContain("policy.senior_rep");
-		expect(progIds).toContain("policy.high_amount");
+		expect(listResp.status).toBe(404);
 	});
 });
