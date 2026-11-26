@@ -373,9 +373,11 @@ export function batchEvaluateCel(
 		parsed.execution_time_us = latencyUs;
 
 		if (parsed.results) {
+			const ruleById = new Map<string, (typeof resolvedRules)[number]>();
+			for (const r of resolvedRules) ruleById.set(r.id, r);
 			for (const res of parsed.results) {
 				if (res.success && res.program_id) {
-					const original = resolvedRules.find((r) => r.id === res.id);
+					const original = ruleById.get(res.id);
 					if (original?.source) {
 						cacheProgramSource(res.program_id, original.source);
 					}
@@ -484,6 +486,17 @@ function unauthorizedResponse(): Response {
 	});
 }
 
+const EXPECTED_TOKEN_DIGEST_CACHE = new Map<string, Uint8Array>();
+
+async function cachedTokenDigest(token: string): Promise<Uint8Array> {
+	const hit = EXPECTED_TOKEN_DIGEST_CACHE.get(token);
+	if (hit) return hit;
+	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(token)));
+	if (EXPECTED_TOKEN_DIGEST_CACHE.size >= 16) EXPECTED_TOKEN_DIGEST_CACHE.clear();
+	EXPECTED_TOKEN_DIGEST_CACHE.set(token, digest);
+	return digest;
+}
+
 async function hasValidBearerToken(request: Request, expectedToken?: string): Promise<boolean> {
 	if (!expectedToken) return false;
 
@@ -491,11 +504,10 @@ async function hasValidBearerToken(request: Request, expectedToken?: string): Pr
 	const match = authorization?.match(/^Bearer ([^\s]+)$/i);
 	if (!match) return false;
 
-	const [expectedDigest, providedDigest] = await Promise.all([
-		crypto.subtle.digest("SHA-256", encoder.encode(expectedToken)),
+	const [expected, providedDigest] = await Promise.all([
+		cachedTokenDigest(expectedToken),
 		crypto.subtle.digest("SHA-256", encoder.encode(match[1])),
 	]);
-	const expected = new Uint8Array(expectedDigest);
 	const provided = new Uint8Array(providedDigest);
 	let difference = 0;
 	for (let index = 0; index < expected.length; index++) {
