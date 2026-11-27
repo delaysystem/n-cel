@@ -5,6 +5,7 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "n-cel",
+	"account_id": "3b27bbae23636a0e40eff144e12d7317",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-09-25",
 	"workers_dev": false,
